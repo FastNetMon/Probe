@@ -1,11 +1,5 @@
 #pragma once
 
-//
-// Upstream version of this file is located at https://github.com/pavel-odintsov/fastnetmon/blob/master/src/libsflow/libsflow.hpp
-//
-// For clarity we removed all functions for parsing sFlow from it as we have no plans to do so.
-//
-
 #include <array>
 #include <climits>
 #include <cstdint>
@@ -13,11 +7,16 @@
 #include <iostream>
 #include <sstream>
 #include <string>
-
-// TODO: we need to get rid of it
-#include <arpa/inet.h>
+#include <tuple>
+#include <vector>
 
 #include "../fast_endianless.hpp"
+
+//
+// Upstream version of this file is located at https://github.com/pavel-odintsov/fastnetmon/blob/master/src/libsflow/libsflow.hpp
+//
+// For clarity we removed all functions for parsing sFlow from it as we have no plans to do so.
+//
 
 // We need it for sanity checks
 const uint32_t max_udp_packet_size = 65535;
@@ -37,7 +36,7 @@ enum sflow_header_protocol {
     SFLOW_HEADER_PROTOCOL_IPv6     = 12,
 };
 
-// Old fashioned not typed enums for fast comparisions and assignments to
+// Old fashioned not typed enums for fast comparisons and assignments to
 // integers
 enum sflow_sample_type_not_typed_t {
     SFLOW_SAMPLE_TYPE_FLOW_SAMPLE             = 1,
@@ -69,10 +68,12 @@ class __attribute__((__packed__)) sflow_sample_header_as_struct_t {
     uint32_t sample_length = 0;
 
     void host_byte_order_to_network_byte_order() {
-        enterprise_and_sample_type_as_integer = htonl(enterprise_and_sample_type_as_integer);
-        sample_length                         = htonl(sample_length);
+        enterprise_and_sample_type_as_integer = fast_hton(enterprise_and_sample_type_as_integer);
+        sample_length                         = fast_hton(sample_length);
     }
 };
+
+static_assert(sizeof(sflow_sample_header_as_struct_t) == 8, "Bad size for sflow_sample_header_as_struct_t");
 
 class __attribute__((__packed__)) sflow_record_header_t {
     public:
@@ -80,12 +81,11 @@ class __attribute__((__packed__)) sflow_record_header_t {
     uint32_t record_length = 0;
 
     void host_byte_order_to_network_byte_order() {
-        record_type   = htonl(record_type);
-        record_length = htonl(record_length);
+        record_type   = fast_hton(record_type);
+        record_length = fast_hton(record_length);
     }
 };
 
-static_assert(sizeof(sflow_sample_header_as_struct_t) == 8, "Bad size for sflow_sample_header_as_struct_t");
 static_assert(sizeof(sflow_record_header_t) == 8, "Bad size for sflow_record_header_t");
 
 // Structure which describes sampled raw ethernet packet from switch
@@ -123,6 +123,8 @@ class __attribute__((__packed__)) sflow_raw_protocol_header_t {
         return buffer.str();
     }
 };
+
+static_assert(sizeof(sflow_raw_protocol_header_t) == 16, "Broken size for sflow_raw_protocol_header_t");
 
 class __attribute__((__packed__)) sflow_sample_header_t {
     public:
@@ -177,6 +179,8 @@ class __attribute__((__packed__)) sflow_sample_header_t {
     }
 };
 
+static_assert(sizeof(sflow_sample_header_t) == 32, "Broken size for sflow_sample_header_t");
+
 // This header format is really close to "sflow_sample_header_t" but we do not
 // encode formats in
 // value
@@ -223,6 +227,8 @@ class __attribute__((__packed__)) sflow_sample_expanded_header_t {
         return buffer.str();
     }
 };
+
+static_assert(sizeof(sflow_sample_expanded_header_t) == 44, "Broken size for sflow_sample_expanded_header_t");
 
 // IP protocol version use by sflow agent
 enum sflow_agent_ip_protocol_version_not_typed : int32_t {
@@ -271,7 +277,7 @@ template <std::size_t address_length> class __attribute__((__packed__)) sflow_pa
         datagram_samples_count   = fast_hton(datagram_samples_count);
     }
 
-    std::string print() {
+    std::string print() const {
         std::stringstream buffer;
 
         buffer << "sflow_version: " << sflow_version << std::endl
@@ -297,6 +303,9 @@ template <std::size_t address_length> class __attribute__((__packed__)) sflow_pa
 
 using sflow_packet_header_v4_t = sflow_packet_header<4>;
 using sflow_packet_header_v6_t = sflow_packet_header<16>;
+
+static_assert(sizeof(sflow_packet_header_v4_t) == 28, "Broken size for packed IPv4 structure");
+static_assert(sizeof(sflow_packet_header_v6_t) == 40, "Broken size for packed IPv6 structure");
 
 // This structure keeps information about gateway details, we use it to parse only few first fields
 class __attribute__((__packed__)) sflow_extended_gateway_information_t {
@@ -332,6 +341,8 @@ class __attribute__((__packed__)) sflow_counter_header_t {
     }
 };
 
+static_assert(sizeof(sflow_counter_header_t) == 12, "Broken size for sflow_counter_header_t");
+
 // Expanded form of sflow_counter_header_t
 class __attribute__((__packed__)) sflow_counter_expanded_header_t {
     public:
@@ -358,6 +369,8 @@ class __attribute__((__packed__)) sflow_counter_expanded_header_t {
         return buffer.str();
     }
 };
+
+static_assert(sizeof(sflow_counter_expanded_header_t) == 16, "Broken size for sflow_counter_expanded_header_t");
 
 class __attribute__((__packed__)) ethernet_sflow_interface_counters_t {
     public:
@@ -414,6 +427,8 @@ class __attribute__((__packed__)) ethernet_sflow_interface_counters_t {
         return buffer.str();
     }
 };
+
+static_assert(sizeof(ethernet_sflow_interface_counters_t) == 52, "Broken size for ethernet_sflow_interface_counters_t");
 
 // http://www.sflow.org/SFLOW-STRUCTS5.txt
 class __attribute__((__packed__)) generic_sflow_interface_counters_t {
@@ -489,13 +504,4 @@ class __attribute__((__packed__)) generic_sflow_interface_counters_t {
     }
 };
 
-static_assert(sizeof(sflow_raw_protocol_header_t) == 16, "Broken size for sflow_raw_protocol_header_t");
-static_assert(sizeof(sflow_sample_expanded_header_t) == 44, "Broken size for sflow_sample_expanded_header_t");
-static_assert(sizeof(sflow_counter_header_t) == 12, "Broken size for sflow_counter_header_t");
-static_assert(sizeof(sflow_counter_expanded_header_t) == 16, "Broken size for sflow_counter_expanded_header_t");
-static_assert(sizeof(ethernet_sflow_interface_counters_t) == 52, "Broken size for ethernet_sflow_interface_counters_t");
 static_assert(sizeof(generic_sflow_interface_counters_t) == 88, "Broken size for generic_sflow_interface_counters_t");
-
-static_assert(sizeof(sflow_sample_header_t) == 32, "Broken size for sflow_sample_header_t");
-static_assert(sizeof(sflow_packet_header_v4_t) == 28, "Broken size for packed IPv4 structure");
-static_assert(sizeof(sflow_packet_header_v6_t) == 40, "Broken size for packed IPv6 structure");
