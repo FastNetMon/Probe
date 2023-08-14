@@ -11,9 +11,6 @@
 
 #include "libsflow/libsflow.hpp"
 
-// For pooling operations
-#include <poll.h>
-
 std::string log_file_path = "/var/log/fastnetmon_probe.log";
 
 uint32_t sflow_global_sequence_counter = 0;
@@ -22,49 +19,20 @@ uint32_t global_sampling_rate          = 1024;
 
 std::string sflow_target_server = "127.0.0.1";
 
-// We use 1600
-const size_t max_packet_size = 1600;
+// Assume default packet size
+const size_t max_packet_size = 1500;
 
 // Prototypes
 void process_packet(uint32_t packet_size_before_sampling, uint8_t* packet_data);
 void generate_sflow_packet(uint32_t packet_size_before_sampling, uint8_t* packet_data);
 
-enum class generated_stream_type_t { SFLOW };
-
-generated_stream_type_t generated_stream_type;
-
-class packet_with_length_t {
-    public:
-    packet_with_length_t(void* data, size_t data_length) {
-        if (data_length > max_packet_size) {
-            packet_length = 0;
-        } else {
-            memcpy(internal_data, data, data_length);
-            packet_length = data_length;
-        }
-    }
-
-    packet_with_length_t() = default;
-
-    uint8_t internal_data[max_packet_size] = {};
-    uint16_t packet_length{ 0 };
-};
-
 int number_of_packets = 0;
-
-uint64_t eth3_received_packets = 0;
-uint64_t eth4_received_packets = 0;
 
 void calculation() {
     for (;;) {
         sleep(1);
         std::cout << "We received packets: " << number_of_packets << std::endl;
-        std::cout << "We dequeued packets from eth3: " << eth3_received_packets << std::endl;
-        std::cout << "We dequeued packets from eth4: " << eth4_received_packets << std::endl;
-        std::cout << "We dequeued packets from eth3 and eth4: " << eth3_received_packets + eth4_received_packets << std::endl;
         number_of_packets     = 0;
-        eth3_received_packets = 0;
-        eth4_received_packets = 0;
     }
 }
 
@@ -119,11 +87,6 @@ bool send_binary_data_to_server(int protocol, uint16_t remote_server_port, const
     }
 
     return true;
-}
-
-
-bool send_binary_data_to_udp_server(uint16_t remote_server_port, const std::string& remote_host, const void* data, size_t data_length) {
-    return send_binary_data_to_server(SOCK_DGRAM, remote_server_port, remote_host, data, data_length);
 }
 
 uint64_t get_server_uptime_in_seconds() {
@@ -267,8 +230,7 @@ void generate_sflow_packet(uint32_t packet_size_before_sampling, uint8_t* packet
     // binary_buffer.get_used_memory() <<
     // std::endl;
 
-    send_binary_data_to_udp_server(6343, sflow_target_server.c_str(), binary_buffer.get_internal_buffer_address(),
-                                   binary_buffer.get_used_memory());
+    send_binary_data_to_server(SOCK_DGRAM, 6343, sflow_target_server.c_str(), binary_buffer.get_internal_buffer_address(), binary_buffer.get_used_memory());
 }
 
 int main(int argc, char* argv[]) {
@@ -282,7 +244,6 @@ int main(int argc, char* argv[]) {
     std::string target_protocol = argv[1];
 
     if (target_protocol == "sflow5") {
-        generated_stream_type = generated_stream_type_t::SFLOW;
     } else {
         std::cout << "Unexpected protocol type: " << target_protocol << std::endl;
         return -1;
