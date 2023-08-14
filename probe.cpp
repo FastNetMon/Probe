@@ -1,40 +1,20 @@
 #include <iostream>
 #include <sstream>
-#include <stdio.h>
 #include <string>
 #include <thread>
 
-#include "binary_buffer.hpp"
-// #include "fast_library.hpp"
-#include "libsflow/libsflow.h"
+#include <stdio.h>
+#include <unistd.h>
+#include <sys/sysinfo.h>
 
-#include <log4cpp/Appender.hh>
-#include <log4cpp/BasicLayout.hh>
-#include <log4cpp/Category.hh>
-#include <log4cpp/FileAppender.hh>
-#include <log4cpp/Layout.hh>
-#include <log4cpp/OstreamAppender.hh>
-#include <log4cpp/PatternLayout.hh>
-#include <log4cpp/Priority.hh>
+#include "binary_buffer.hpp"
+
+#include "libsflow/libsflow.hpp"
 
 // For pooling operations
 #include <poll.h>
 
-// #include "fastnetmon_packet_parser.h"
-
-#include "readerwriterqueue.h"
-
-// https://github.com/luigirizzo/netmap/issues/46
-// TODO: All netmap's includes should be BEFORE any other includes! Because netmap doing some werid definitions which
-// broke Boost (I'm speaking about "D")
-#define NETMAP_WITH_LIBS
-#include "net/netmap_user.h"
-
 std::string log_file_path = "/var/log/fastnetmon_probe.log";
-log4cpp::Category& logger = log4cpp::Category::getRoot();
-
-using namespace moodycamel;
-using namespace network_data_stuctures;
 
 uint32_t sflow_global_sequence_counter = 0;
 uint32_t sflow_port_sequence_number    = 0;
@@ -70,131 +50,7 @@ class packet_with_length_t {
     uint16_t packet_length{ 0 };
 };
 
-typedef ReaderWriterQueue<packet_with_length_t> lockless_queue_t;
-
-lockless_queue_t eth3_queue(5000);
-lockless_queue_t eth4_queue(5000);
-
 int number_of_packets = 0;
-
-/* prototypes */
-inline void netmap_thread(struct nm_desc* netmap_descriptor, lockless_queue_t* queue);
-
-inline int receive_packets(struct netmap_ring* ring, lockless_queue_t* queue) {
-    // Count number of packets received by this thread
-    thread_local uint64_t received_number_of_packets = 0;
-
-    u_int cur, rx, n;
-
-    cur = ring->cur;
-    n   = nm_ring_space(ring);
-
-    for (rx = 0; rx < n; rx++) {
-        struct netmap_slot* slot = &ring->slot[cur];
-        char* p                  = NETMAP_BUF(ring, slot->buf_idx);
-
-        // process data
-        // consume_pkt((u_char*)p, slot->len);
-        if (received_number_of_packets++ % global_sampling_rate == 0) {
-            //__sync_fetch_and_add(&number_of_packets, 1);
-
-            // Add to thread for this process
-            bool result = queue->try_enqueue(packet_with_length_t(p, slot->len));
-
-            if (!result) {
-                std::cout << "Queue overloaded. Please increase queue size" << std::endl;
-            }
-        }
-
-        cur = nm_ring_next(ring, cur);
-    }
-
-    ring->head = ring->cur = cur;
-    return (rx);
-}
-
-void receiver(std::string interface, lockless_queue_t* queue) {
-    struct nm_desc* netmap_descriptor;
-
-    u_int num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
-    printf("We have %d cpus\n", num_cpus);
-
-    struct nmreq base_nmd;
-    bzero(&base_nmd, sizeof(base_nmd));
-
-    // Magic from pkt-gen.c
-    base_nmd.nr_tx_rings = base_nmd.nr_rx_rings = 0;
-    base_nmd.nr_tx_slots = base_nmd.nr_rx_slots = 0;
-
-    netmap_descriptor = nm_open(interface.c_str(), &base_nmd, 0, NULL);
-
-    if (netmap_descriptor == NULL) {
-        printf("Can't open netmap device %s\n", interface.c_str());
-        exit(1);
-        return;
-    }
-
-    printf("Mapped %dKB memory at %p\n", netmap_descriptor->req.nr_memsize >> 10, netmap_descriptor->mem);
-    printf("We have %d tx and %d rx rings\n", netmap_descriptor->req.nr_tx_rings, netmap_descriptor->req.nr_rx_rings);
-
-    /*
-        protocol stack and may cause a reset of the card,
-        which in turn may take some time for the PHY to
-        reconfigure. We do the open here to have time to reset.
-    */
-
-    int wait_link = 2;
-    printf("Wait %d seconds for NIC reset\n", wait_link);
-    sleep(wait_link);
-
-    netmap_thread(netmap_descriptor, queue);
-}
-
-inline void netmap_thread(struct nm_desc* netmap_descriptor, lockless_queue_t* queue) {
-    struct nm_pkthdr h;
-    u_char* buf;
-    struct pollfd fds;
-    fds.fd     = netmap_descriptor->fd; // NETMAP_FD(netmap_descriptor);
-    fds.events = POLLIN;
-
-    struct netmap_ring* rxring = NULL;
-    struct netmap_if* nifp     = netmap_descriptor->nifp;
-
-    // printf("Reading from fd %d thread id: %d\n", netmap_descriptor->fd,
-    // thread_number);
-
-    for (;;) {
-        // We will wait 1000 microseconds for retry, for infinite timeout please use
-        // -1
-        int poll_result = poll(&fds, 1, 1000);
-
-        if (poll_result == 0) {
-            // printf("poll return 0 return code\n");
-            continue;
-        }
-
-        if (poll_result == -1) {
-            printf("poll failed with return code -1\n");
-        }
-
-        for (int i = netmap_descriptor->first_rx_ring; i <= netmap_descriptor->last_rx_ring; i++) {
-            // printf("Check ring %d from thread %d\n", i, thread_number);
-            rxring = NETMAP_RXRING(nifp, i);
-
-            if (nm_ring_empty(rxring)) {
-                continue;
-            }
-
-            int m = receive_packets(rxring, queue);
-        }
-
-        // while ( (buf = nm_nextpkt(netmap_descriptor, &h)) ) {
-        //    consume_pkt(buf, h.len);
-        //}
-    }
-
-    // nm_close(netmap_descriptor);
-}
 
 uint64_t eth3_received_packets = 0;
 uint64_t eth4_received_packets = 0;
@@ -212,49 +68,75 @@ void calculation() {
     }
 }
 
-void packet_consumer() {
-    packet_with_length_t packet;
+bool execute_conection(int protocol, uint16_t remote_server_port, const std::string& remote_host, int& socket_fd_answer) {
+    int client_sockfd = socket(AF_INET, protocol, 0);
 
-    // not blocking version
-    while (true) {
-        bool eth3_res = eth3_queue.try_dequeue(packet);
-
-        if (eth3_res) {
-            __sync_fetch_and_add(&eth3_received_packets, 1);
-            process_packet(packet.packet_length, packet.internal_data);
-        }
-
-        bool eth4_res = eth4_queue.try_dequeue(packet);
-
-        if (eth4_res) {
-            __sync_fetch_and_add(&eth4_received_packets, 1);
-            process_packet(packet.packet_length, packet.internal_data);
-        }
-
-        // Allow for system scheduler to get slice for other processes
-        // Not helped us
-        // std::this_thread::yield();
-
-        // std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+    if (client_sockfd < 0) {
+        return false;
     }
+
+    struct sockaddr_in serv_addr;
+    memset(&serv_addr, 0, sizeof(serv_addr));
+
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port   = htons(remote_server_port);
+
+    int pton_result = inet_pton(AF_INET, remote_host.c_str(), &serv_addr.sin_addr);
+
+    if (pton_result <= 0) {
+        close(client_sockfd);
+        return false;
+    }
+
+    int connect_result = connect(client_sockfd, (struct sockaddr*)&serv_addr, sizeof(serv_addr));
+
+    if (connect_result < 0) {
+        close(client_sockfd);
+        return false;
+    }
+
+    // Return connected socket
+    socket_fd_answer = client_sockfd;
+    return true;
 }
 
-void init_logging() {
-    log4cpp::PatternLayout* layout = new log4cpp::PatternLayout();
-    layout->setConversionPattern("%d [%p] %m%n");
 
-    log4cpp::Appender* appender = new log4cpp::FileAppender("default", log_file_path);
-    appender->setLayout(layout);
+bool send_binary_data_to_server(int protocol, uint16_t remote_server_port, const std::string& remote_host, const void* data, size_t data_length) {
+    int client_sockfd = 0;
 
-    logger.setPriority(log4cpp::Priority::INFO);
-    logger.addAppender(appender);
-    logger.info("Logger initialized!");
+    bool connect_result = execute_conection(protocol, remote_server_port, remote_host, client_sockfd);
+
+    if (!connect_result) {
+        return false;
+    }
+
+    int write_result = write(client_sockfd, data, data_length);
+
+    close(client_sockfd);
+
+    if (write_result <= 0) {
+        return false;
+    }
+
+    return true;
 }
 
-void process_packet(uint32_t packet_size_before_sampling, uint8_t* packet_data) {
-    if (generated_stream_type == generated_stream_type_t::SFLOW) {
-        generate_sflow_packet(packet_size_before_sampling, packet_data);
+
+bool send_binary_data_to_udp_server(uint16_t remote_server_port, const std::string& remote_host, const void* data, size_t data_length) {
+    return send_binary_data_to_server(SOCK_DGRAM, remote_server_port, remote_host, data, data_length);
+}
+
+uint64_t get_server_uptime_in_seconds() {
+    struct sysinfo current_server_sysinfo;
+    memset(&current_server_sysinfo, 0, sizeof(current_server_sysinfo));
+
+    int sysinfo_result = sysinfo(&current_server_sysinfo);
+
+    if (sysinfo_result != 0) {
+        return 0;
     }
+
+    return (uint64_t)current_server_sysinfo.uptime;
 }
 
 void generate_sflow_packet(uint32_t packet_size_before_sampling, uint8_t* packet_data) {
@@ -410,17 +292,9 @@ int main(int argc, char* argv[]) {
 
     std::cout << "We will send " << target_protocol << " stream to server " << sflow_target_server << std::endl;
 
-    init_logging();
+    // TODO: Add logic to consume packets from interface
 
-    // receiver();
-    std::thread first_netmap_thread(receiver, "netmap:eth3/rt", &eth3_queue);
-    std::thread second_netmap_thread(receiver, "netmap:eth4/rt", &eth4_queue);
     std::thread calculation_thread(calculation);
-    std::thread packet_consumer_thread(packet_consumer);
 
-    first_netmap_thread.join();
-    second_netmap_thread.join();
-
-    packet_consumer_thread.join();
     calculation_thread.join();
 }
