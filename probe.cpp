@@ -5,11 +5,8 @@
 #include <thread>
 
 #include "binary_buffer.hpp"
-#include "fast_library.hpp"
+// #include "fast_library.hpp"
 #include "libsflow/libsflow.h"
-#include "network_data_structures.hpp"
-
-#include <msgpack.hpp>
 
 #include <log4cpp/Appender.hh>
 #include <log4cpp/BasicLayout.hh>
@@ -49,11 +46,10 @@ std::string sflow_target_server = "127.0.0.1";
 const size_t max_packet_size = 1600;
 
 // Prototypes
-void generate_msgpack_packet(uint32_t packet_size_before_sampling, uint8_t* packet_data);
 void process_packet(uint32_t packet_size_before_sampling, uint8_t* packet_data);
 void generate_sflow_packet(uint32_t packet_size_before_sampling, uint8_t* packet_data);
 
-enum class generated_stream_type_t { SFLOW, MSGPACK };
+enum class generated_stream_type_t { SFLOW };
 
 generated_stream_type_t generated_stream_type;
 
@@ -258,50 +254,7 @@ void init_logging() {
 void process_packet(uint32_t packet_size_before_sampling, uint8_t* packet_data) {
     if (generated_stream_type == generated_stream_type_t::SFLOW) {
         generate_sflow_packet(packet_size_before_sampling, packet_data);
-    } else if (generated_stream_type == generated_stream_type_t::MSGPACK) {
-        generate_msgpack_packet(packet_size_before_sampling, packet_data);
     }
-}
-
-void generate_msgpack_packet(uint32_t packet_size_before_sampling, uint8_t* packet_data) {
-    // We are using pointer copy because we are changing it
-    uint8_t* local_pointer = packet_data;
-
-    ethernet_header_t* ethernet_header = (ethernet_header_t*)local_pointer;
-    ethernet_header->convert();
-
-    local_pointer += sizeof(ethernet_header_t);
-
-    // Skip vlan tag
-    if (ethernet_header->ethertype == IanaEthertypeVLAN) {
-        ethernet_vlan_header_t* ethernet_vlan_header = (ethernet_vlan_header_t*)local_pointer;
-        ethernet_vlan_header->convert();
-
-        local_pointer += sizeof(ethernet_vlan_header_t);
-
-        // Change ethernet ethertype to vlan's ethertype
-        ethernet_header->ethertype = ethernet_vlan_header->ethertype;
-    }
-
-    // We support only IPv4 here
-    if (ethernet_header->ethertype != IanaEthertypeIPv4) {
-        return;
-    }
-
-    ipv4_header_t* ipv4_header = (ipv4_header_t*)local_pointer;
-    ipv4_header->convert();
-
-    msgpack::type::tuple<std::string, std::string, uint32_t> packet_tuple(
-        convert_ip_as_little_endian_to_string(ipv4_header->source_ip),
-        convert_ip_as_little_endian_to_string(ipv4_header->destination_ip), packet_size_before_sampling);
-
-    std::stringstream buffer;
-    msgpack::pack(buffer, packet_tuple);
-    buffer.seekg(0);
-
-    std::string data_for_wire(buffer.str());
-
-    send_binary_data_to_udp_server(6343, sflow_target_server.c_str(), data_for_wire.c_str(), data_for_wire.size());
 }
 
 void generate_sflow_packet(uint32_t packet_size_before_sampling, uint8_t* packet_data) {
@@ -438,7 +391,7 @@ void generate_sflow_packet(uint32_t packet_size_before_sampling, uint8_t* packet
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {
-        std::cout << "Please specify target protocol (sflow5 ot msgpack) and "
+        std::cout << "Please specify target protocol (sflow5 only) and "
                      "target server IP address"
                   << std::endl;
         return -1;
@@ -448,8 +401,6 @@ int main(int argc, char* argv[]) {
 
     if (target_protocol == "sflow5") {
         generated_stream_type = generated_stream_type_t::SFLOW;
-    } else if (target_protocol == "msgpack") {
-        generated_stream_type = generated_stream_type_t::MSGPACK;
     } else {
         std::cout << "Unexpected protocol type: " << target_protocol << std::endl;
         return -1;
